@@ -71,7 +71,11 @@ fn pids() -> Result<impl Iterator<Item = Result<pid_t>>> {
 
 fn parse_pid(name: &CStr) -> Option<pid_t> {
     let name = name.to_str().ok()?;
-    name.bytes().all(|b| b.is_ascii_digit()).then_some(name)?.parse().ok()
+    name.bytes()
+        .all(|b| b.is_ascii_digit())
+        .then_some(name)?
+        .parse()
+        .ok()
 }
 
 struct Process {
@@ -97,7 +101,12 @@ impl Process {
     }
 
     fn report(&self) {
-        fs101::report_process(self.pid, &self.exe, &borrow(&self.argv), &borrow(&self.envp));
+        fs101::report_process(
+            self.pid,
+            &self.exe,
+            &borrow(&self.argv),
+            &borrow(&self.envp),
+        );
     }
 }
 
@@ -137,7 +146,10 @@ struct Chunks {
 impl Chunks {
     fn open(path: &CStr) -> Result<Self> {
         let fd = openat(CWD, path, OFlags::RDONLY, Mode::empty()).at(path)?;
-        Ok(Self { fd: Some(fd), path: path.into() })
+        Ok(Self {
+            fd: Some(fd),
+            path: path.into(),
+        })
     }
 }
 
