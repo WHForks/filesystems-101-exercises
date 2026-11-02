@@ -78,7 +78,7 @@ unsafe extern "C" fn read(
     if unsafe { path(p) } != b"/hello" {
         return -ENOENT;
     }
-    let s = format!("hello, {}", unsafe { (*fuse_get_context()).pid });
+    let s = format!("hello, {}\n", unsafe { (*fuse_get_context()).pid });
     let data = s.as_bytes().get(off as usize..).unwrap_or(&[]);
     let n = data.len().min(len);
     unsafe { slice::from_raw_parts_mut(buf.cast(), n).copy_from_slice(&data[..n]) };
