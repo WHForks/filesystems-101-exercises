@@ -37,7 +37,11 @@ pub fn helloworld(mntp: &CStr) -> c_int {
         readdir: Some(readdir),
         ..fuse_operations::EMPTY
     };
-    fuse_main(&[c"helloworld", c"-f", mntp], &ops, ptr::null_mut())
+    fuse_main(
+        &[c"helloworld", c"-f", c"-o", c"ro", mntp],
+        &ops,
+        ptr::null_mut(),
+    )
 }
 
 unsafe fn path<'a>(p: *const c_char) -> &'a [u8] {
@@ -63,7 +67,7 @@ unsafe extern "C" fn open(p: *const c_char, fi: *mut fuse_file_info) -> c_int {
             unsafe { (*fi).set_direct_io(true) };
             0
         }
-        (b"/hello", _) => -EACCES,
+        (b"/hello", _) => -EROFS,
         _ => -ENOENT,
     }
 }
