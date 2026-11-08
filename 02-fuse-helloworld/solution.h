@@ -3,7 +3,7 @@
 #include <unistd.h>
 
 /**
-   Implement this function to to mount a "helloworld" FUSE filesystem to @mntp.
+   Implement this function to mount a "helloworld" FUSE filesystem to @mntp.
    The root of a filesystem must contain the following entries (the owner UID
    and GID may be different):
 
@@ -16,6 +16,6 @@
    PID is the id of a process that reads "hello", and "\n" is the newline.
    It is OK to report the size of "hello" that does not match the content.
 
-   Any attempt write to the FS must report EROFS.
+   Any attempt to write to the FS must report EROFS.
 */
 int helloworld(const char *mntp);

@@ -1,0 +1,7 @@
+HARNESS_SRC := main.c
+HARNESS_CFLAGS := -I/usr/include/liburing
+HARNESS_LDLIBS := -luring
+BINDGEN_HEADERS := liburing.h
+BINDGEN_FLAGS := --allowlist-file '.*/liburing.*'
+
+include ../stdlib/rust.mk
