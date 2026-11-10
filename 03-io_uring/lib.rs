@@ -1,7 +1,19 @@
 #![no_std]
 
-use rustix::fd::BorrowedFd;
-use rustix::io::Errno;
+extern crate alloc;
+
+use alloc::vec;
+use alloc::vec::Vec;
+use core::ffi::c_int;
+use core::mem::MaybeUninit;
+use core::ptr;
+
+use fs101::uring::*;
+use rustix::fd::{AsRawFd, BorrowedFd};
+use rustix::io::{self, Errno};
+
+const BLOCK: usize = 256 * 1024;
+const BUFFERS: usize = 4;
 
 /// Implement this function to copy data from `fd_in` to `fd_out` with io_uring.
 /// File descriptors `fd_in` and `fd_out` are guaranteed to be regular files.
@@ -18,6 +30,111 @@ use rustix::io::Errno;
 ///
 /// Assume a recent kernel and use IORING_OP_READ and IORING_OP_WRITE.
 pub fn copy(fd_in: BorrowedFd<'_>, fd_out: BorrowedFd<'_>) -> Result<(), Errno> {
-    let _ = (fd_in, fd_out);
-    todo!()
+    let size = rustix::fs::fstat(fd_in)?.st_size as u64;
+    let mut memory = vec![0u8; BUFFERS * BLOCK];
+    let mut ring = Ring::new(&mut memory, [fd_in, fd_out])?;
+
+    let mut buffers = [Buffer::Free; BUFFERS];
+    let mut next = 0;
+    let mut error = None;
+
+    loop {
+        for (i, buffer) in buffers.iter_mut().enumerate() {
+            if *buffer == Buffer::Free && error.is_none() && next < size {
+                let length = (size - next).min(BLOCK as u64) as usize;
+                ring.copy_block(i, &mut memory[i * BLOCK..][..length], next);
+                *buffer = Buffer::Reading(length);
+                next += length as u64;
+            }
+        }
+        if buffers.iter().all(|buffer| *buffer == Buffer::Free) {
+            return error.map_or(Ok(()), Err);
+        }
+
+        let (i, completion) = ring.wait()?;
+        let (Buffer::Reading(length) | Buffer::Writing(length)) = buffers[i] else {
+            panic!("buffer state is invalid");
+        };
+        if completion != Ok(length) {
+            error.get_or_insert(completion.err().unwrap_or(Errno::IO));
+        }
+        buffers[i] = match buffers[i] {
+            Buffer::Reading(length) => Buffer::Writing(length),
+            _ => Buffer::Free,
+        };
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Buffer {
+    Free,
+    Reading(usize),
+    Writing(usize),
+}
+
+struct Ring(io_uring);
+
+impl Ring {
+    fn new(memory: &mut [u8], files: [BorrowedFd<'_>; 2]) -> Result<Self, Errno> {
+        let mut ring = MaybeUninit::uninit();
+        check(unsafe { io_uring_queue_init(2 * BUFFERS as u32, ring.as_mut_ptr(), 0) })?;
+        let mut ring = Self(unsafe { ring.assume_init() });
+
+        let iovecs: Vec<iovec> = memory
+            .chunks_mut(BLOCK)
+            .map(|buffer| iovec {
+                iov_base: buffer.as_mut_ptr().cast(),
+                iov_len: buffer.len(),
+            })
+            .collect();
+        let files = files.map(|fd| fd.as_raw_fd());
+        check(unsafe { io_uring_register_buffers(&mut ring.0, iovecs.as_ptr(), BUFFERS as u32) })?;
+        check(unsafe { io_uring_register_files(&mut ring.0, files.as_ptr(), 2) })?;
+        Ok(ring)
+    }
+
+    fn copy_block(&mut self, i: usize, buffer: &mut [u8], offset: u64) {
+        let address = buffer.as_mut_ptr();
+        let length = buffer.len() as u32;
+        let index = i as c_int;
+        unsafe {
+            let read = self.submission_queue_entry();
+            io_uring_prep_read_fixed(read, 0, address.cast(), length, offset, index);
+            io_uring_sqe_set_flags(read, IOSQE_FIXED_FILE | IOSQE_IO_LINK);
+            io_uring_sqe_set_data64(read, i as u64);
+
+            let write = self.submission_queue_entry();
+            io_uring_prep_write_fixed(write, 1, address.cast(), length, offset, index);
+            io_uring_sqe_set_flags(write, IOSQE_FIXED_FILE);
+            io_uring_sqe_set_data64(write, i as u64);
+        }
+    }
+
+    fn submission_queue_entry(&mut self) -> *mut io_uring_sqe {
+        let entry = unsafe { io_uring_get_sqe(&mut self.0) };
+        entry
+    }
+
+    fn wait(&mut self) -> Result<(usize, Result<usize, Errno>), Errno> {
+        check(unsafe { io_uring_submit(&mut self.0) })?;
+
+        let mut completion = ptr::null_mut();
+        io::retry_on_intr(|| check(unsafe {
+            io_uring_wait_cqe(&mut self.0, &mut completion)
+        }))?;
+
+        let (user_data, result) = unsafe { ((*completion).user_data as usize, (*completion).res) };
+        unsafe { io_uring_cqe_seen(&mut self.0, completion) };
+        Ok((user_data, check(result)))
+    }
+}
+
+impl Drop for Ring {
+    fn drop(&mut self) {
+        unsafe { io_uring_queue_exit(&mut self.0) };
+    }
+}
+
+fn check(value: c_int) -> Result<usize, Errno> {
+    usize::try_from(value).map_err(|_| Errno::from_raw_os_error(-value))
 }
